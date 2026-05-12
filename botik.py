@@ -43,7 +43,7 @@ active_signals = {}
 
 def send_telegram(text):
     try:
-        url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
         requests.post(url, json={"chat_id": CHAT_ID, "text": text}, timeout=10)
     except:
         pass
@@ -321,8 +321,7 @@ async def check(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # START
 # =========================
 
-app = Application.builder().token(TOKEN).build()
-
+app = Application.builder().token(BOT_TOKEN).build()
 app.add_handler(CommandHandler("check", check))
 
 threading.Thread(target=auto_loop, daemon=True).start()

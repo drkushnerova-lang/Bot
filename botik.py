@@ -29,10 +29,11 @@ ASSETS = [
 ]
 
 # =========================
-# STATE MEMORY (ГЛАВНОЕ УЛУЧШЕНИЕ)
+# MEMORY (ЖИВОЙ МОЗГ)
 # =========================
 
-state = {}  # asset → {phase, direction, strength, time}
+state = {}              # текущая фаза
+signal_time = {}        # время входа в фазу
 
 # =========================
 # TELEGRAM
@@ -71,7 +72,6 @@ def indicators(df):
     close = df["Close"]
 
     rsi = RSIIndicator(close, 14).rsi()
-
     macd = MACD(close)
 
     ema9 = EMAIndicator(close, 9).ema_indicator()
@@ -83,55 +83,19 @@ def indicators(df):
     return rsi, macd, ema9, ema20, ema50, adx
 
 # =========================
-# LOGIC HELPERS
+# HELPERS
 # =========================
 
 def arrow(direction):
     return "⬆️ BUY" if direction == "BUY" else "⬇️ SELL"
 
 
-# RSI breakout (ВАЖНО ИСПРАВЛЕНО)
-def rsi_logic(rsi):
-
-    prev = rsi.iloc[-2]
-    now = rsi.iloc[-1]
-
-    buy = prev < 30 and now > 30
-    sell = prev > 70 and now < 70
-
-    return buy, sell
-
-
-# MACD momentum (не только cross)
-def macd_logic(macd):
-
-    m = macd.macd()
-    s = macd.macd_signal()
-
-    buy = m.iloc[-1] > s.iloc[-1] and m.iloc[-1] > m.iloc[-2]
-    sell = m.iloc[-1] < s.iloc[-1] and m.iloc[-1] < m.iloc[-2]
-
-    return buy, sell
-
-
-# EMA trend
-def ema_logic(ema9, ema20, ema50):
-
-    buy = ema9.iloc[-1] > ema20.iloc[-1] > ema50.iloc[-1]
-    sell = ema9.iloc[-1] < ema20.iloc[-1] < ema50.iloc[-1]
-
-    return buy, sell
-
-
-# ADX filter
-def adx_logic(adx):
-
-    val = adx.iloc[-1]
-
-    return val > 22, val  # active market + value
+def probability(score, adx):
+    p = 50 + score * 15 + (adx - 20) * 1.2
+    return int(max(10, min(95, p)))
 
 # =========================
-# PHASE ENGINE (ГЛАВНАЯ ЛОГИКА)
+# LOGIC
 # =========================
 
 def analyze(asset):
@@ -142,30 +106,38 @@ def analyze(asset):
 
     rsi, macd, ema9, ema20, ema50, adx = indicators(df)
 
-    if len(df) < 80:
+    if adx.iloc[-1] < 22:
         return
 
-    rsi_buy, rsi_sell = rsi_logic(rsi)
-    macd_buy, macd_sell = macd_logic(macd)
-    ema_buy, ema_sell = ema_logic(ema9, ema20, ema50)
-    market_ok, adx_val = adx_logic(adx)
+    # RSI
+    rsi_prev, rsi_now = rsi.iloc[-2], rsi.iloc[-1]
+    rsi_buy = rsi_prev < 30 and rsi_now > 30
+    rsi_sell = rsi_prev > 70 and rsi_now < 70
 
-    if not market_ok:
-        return
+    # MACD
+    macd_line = macd.macd()
+    signal_line = macd.macd_signal()
+
+    macd_buy = macd_line.iloc[-2] < signal_line.iloc[-2] and macd_line.iloc[-1] > signal_line.iloc[-1]
+    macd_sell = macd_line.iloc[-2] > signal_line.iloc[-2] and macd_line.iloc[-1] < signal_line.iloc[-1]
+
+    # EMA
+    ema_buy = ema9.iloc[-1] > ema20.iloc[-1] > ema50.iloc[-1]
+    ema_sell = ema9.iloc[-1] < ema20.iloc[-1] < ema50.iloc[-1]
 
     buy_score = sum([rsi_buy, macd_buy, ema_buy])
     sell_score = sum([rsi_sell, macd_sell, ema_sell])
 
     direction = "BUY" if buy_score >= sell_score else "SELL"
-    score = buy_score if direction == "BUY" else sell_score
+    score = max(buy_score, sell_score)
+
+    prob = probability(score, adx.iloc[-1])
 
     # =========================
     # STATE MEMORY
     # =========================
 
-    prev_state = state.get(asset, {})
-
-    phase = "SETUP"
+    prev = state.get(asset, {}).get("phase")
 
     if score == 1:
         phase = "SETUP"
@@ -173,63 +145,86 @@ def analyze(asset):
         phase = "CONFIRM"
     elif score == 3:
         phase = "ENTRY"
+    else:
+        return
 
-    # защита от повторов
-    if prev_state.get("phase") == phase:
+    # защита от спама
+    if prev == phase:
         return
 
     state[asset] = {
         "phase": phase,
         "direction": direction,
-        "time": time.time()
+        "time": time.time(),
+        "prob": prob
     }
+
+    signal_time[asset] = time.time()
 
     # =========================
     # MESSAGES
     # =========================
 
     if phase == "SETUP":
-
         send_telegram(f"""
 📊 {asset}
 
 ⚠️ SETUP {arrow(direction)}
-
-Рынок начинает формировать движение
-ADX: {round(adx_val,2)}
+Формируется движение
+📊 Probability: {prob}%
 """)
 
     elif phase == "CONFIRM":
-
         send_telegram(f"""
 📊 {asset}
 
-⏳ CONFIRMATION {arrow(direction)}
-
-Идёт подтверждение сигнала
+⏳ CONFIRM {arrow(direction)}
 2/3 условий выполнены
-ADX: {round(adx_val,2)}
+📊 Probability: {prob}%
 """)
 
     elif phase == "ENTRY":
-
         send_telegram(f"""
 🔥 {asset}
 
 {arrow(direction)} — ВХОД СЕЙЧАС
 
-✔ RSI + MACD + EMA подтверждены
-📊 ADX: {round(adx_val,2)}
-
+📊 Probability: {prob}%
 ⚡ ОТКРЫВАЙ СДЕЛКУ
 """)
+
+# =========================
+# STATUS (ЖИВОЙ МОЗГ)
+# =========================
+
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    if not state:
+        await update.message.reply_text("📊 Нет активных сигналов")
+        return
+
+    msg = "🧠 LIVE BRAIN STATUS\n\n"
+
+    now = time.time()
+
+    for asset, data in state.items():
+
+        t = int(now - data["time"])
+
+        msg += (
+            f"{asset}\n"
+            f"{data['phase']} {arrow(data['direction'])}\n"
+            f"Prob: {data['prob']}%\n"
+            f"Age: {t} sec\n\n"
+        )
+
+    await update.message.reply_text(msg)
 
 # =========================
 # LOOP
 # =========================
 
 def loop():
-
     while True:
         try:
             for a in ASSETS:
@@ -238,24 +233,18 @@ def loop():
             time.sleep(10)
 
         except Exception as e:
-            print("error:", e)
+            print(e)
             time.sleep(5)
-
-# =========================
-# TELEGRAM COMMAND
-# =========================
-
-async def check(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Bot is running PRO v2")
 
 # =========================
 # START
 # =========================
 
 app = Application.builder().token(BOT_TOKEN).build()
-app.add_handler(CommandHandler("check", check))
+
+app.add_handler(CommandHandler("status", status))
 
 threading.Thread(target=loop, daemon=True).start()
 
-print("PRO v2 bot started")
+print("PRO v2.5 running")
 app.run_polling()

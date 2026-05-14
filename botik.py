@@ -22,21 +22,16 @@ CHAT_ID = os.getenv("CHAT_ID")
 
 ASSETS = [
     "EURUSD=X", "GBPUSD=X", "USDJPY=X", "USDCAD=X",
-    "USDCHF=X", "EURCAD=X", "EURGBP=X",
-    "GBPJPY=X", "EURJPY=X", "AUDUSD=X",
-    "BTC-USD", "ETH-USD",
+    "USDCHF=X", "EURCAD=X", "EURGBP=X", "GBPCHF=X",
+    "GBPJPY=X", "EURJPY=X", "AUDUSD=X", "AUDNZD=X",
+    "BTC-USD", "AUDJPY=X", "NZDJPY=X",
     "AAPL", "TSLA", "MSFT", "GOOGL"
 ]
 
-# =========================
-# MEMORY
-# =========================
+COOLDOWN = 180  # 3 минуты
 
 state = {}
 last_signal_time = {}
-pre_signal_time = {}
-
-COOLDOWN = 180  # 3 минуты между сигналами
 
 # =========================
 # TELEGRAM
@@ -46,15 +41,15 @@ def send_telegram(text):
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
         requests.post(url, json={"chat_id": CHAT_ID, "text": text}, timeout=10)
-    except:
-        pass
+    except Exception as e:
+        print("Telegram error:", e)
 
 # =========================
 # DATA
 # =========================
 
 def get_data(asset):
-    df = yf.download(asset, period="1d", interval="1m", progress=False)
+    df = yf.download(asset, period="5d", interval="5m", progress=False)
 
     if df is None or df.empty:
         return None
@@ -84,7 +79,7 @@ def indicators(df):
     return rsi, macd, ema9, ema20, adx
 
 # =========================
-# LOGIC
+# ANALYZE
 # =========================
 
 def analyze(asset):
@@ -98,115 +93,124 @@ def analyze(asset):
     adx_now = adx.iloc[-1]
 
     # =========================
-    # MACD HISTOGRAM (IMPROVED)
+    # EMA TREND
+    # =========================
+
+    ema_buy = ema9.iloc[-1] > ema20.iloc[-1]
+    ema_sell = ema9.iloc[-1] < ema20.iloc[-1]
+
+    # =========================
+    # MACD
     # =========================
 
     macd_line = macd.macd()
     signal_line = macd.macd_signal()
-
     hist = macd_line - signal_line
 
-    macd_buy = hist.iloc[-2] < 0 and hist.iloc[-1] > 0   # красный → зелёный
-    macd_sell = hist.iloc[-2] > 0 and hist.iloc[-1] < 0  # зелёный → красный
+    macd_buy = hist.iloc[-1] > 0 and hist.iloc[-2] <= 0
+    macd_sell = hist.iloc[-1] < 0 and hist.iloc[-2] >= 0
 
     # =========================
-    # CONDITIONS
+    # RSI
     # =========================
 
     rsi_buy = rsi_now > 50
     rsi_sell = rsi_now < 50
 
-    ema_buy = ema9.iloc[-1] > ema20.iloc[-1]
-    ema_sell = ema9.iloc[-1] < ema20.iloc[-1]
-
-    buy_score = int(rsi_buy) + int(macd_buy) + int(ema_buy)
-    sell_score = int(rsi_sell) + int(macd_sell) + int(ema_sell)
-
-    direction = "BUY" if buy_score >= sell_score else "SELL"
-    score = max(buy_score, sell_score)
-
     # =========================
-    # FILTERS
+    # FILTER FLAT
     # =========================
 
-    if adx_now < 12:
+    if adx_now < 15:
         return
+
+    # =========================
+    # SCORE
+    # =========================
+
+    buy_score = int(ema_buy) + int(macd_buy) + int(rsi_buy)
+    sell_score = int(ema_sell) + int(macd_sell) + int(rsi_sell)
+
+    direction = "BUY" if buy_score > sell_score else "SELL"
+    score = max(buy_score, sell_score)
 
     if score < 2:
         return
 
-    now = time.time()
+    # =========================
+    # EXPIRATION (3–6 candles)
+    # =========================
 
-    # cooldown
+    if adx_now < 18:
+        expiry = 3
+    elif adx_now < 22:
+        expiry = 4
+    elif adx_now < 28:
+        expiry = 5
+    else:
+        expiry = 6
+
+    # =========================
+    # COOLDOWN
+    # =========================
+
+    now = time.time()
     last_time = last_signal_time.get(asset, 0)
+
     if now - last_time < COOLDOWN:
         return
 
+    last_signal_time[asset] = now
+
     # =========================
-    # PRE-SIGNAL LOGIC
+    # SEND SIGNAL
     # =========================
 
-    last_pre = pre_signal_time.get(asset, 0)
+    send_telegram(
+        f"""
+📊 {asset}
 
-    if score == 2 and now - last_pre > 60:
-        pre_signal_time[asset] = now
+➡️ Direction: {direction}
 
-        send_telegram(
-            f"""
-⏳ {asset}
+⏱ Expiry: {expiry} candles ({expiry * 5} min)
 
-⚠️ PRE-SIGNAL
-Возможный вход через 30–60 сек
-
-📊 Direction: {direction}
-📈 Strength: {score}/3
-RSI: {round(rsi_now, 1)}
-ADX: {round(adx_now, 1)}
+⭐ Signal strength: {score}/3
 """
-        )
-        return
+    )
 
-    # =========================
-    # ENTRY SIGNAL
-    # =========================
-
-    if score == 3:
-        last_signal_time[asset] = now
-
-        send_telegram(
-            f"""
-🔥 {asset}
-
-🚀 ENTRY NOW
-{direction}
-
-📈 Strength: 3/3
-📊 Probability: {50 + score * 12 + (adx_now - 15) * 1.5:.0f}%
-
-RSI: {round(rsi_now, 1)}
-ADX: {round(adx_now, 1)}
-
-⚡ ВХОД СЕЙЧАС
-"""
-        )
-
-        state[asset] = {
-            "direction": direction,
-            "score": score,
-            "time": now
-        }
+    state[asset] = {
+        "asset": asset,
+        "direction": direction,
+        "score": score,
+        "expiry": expiry,
+        "time": now
+    }
 
 # =========================
-# STATUS
+# LOOP
+# =========================
+
+def loop():
+    while True:
+        for asset in ASSETS:
+            try:
+                analyze(asset)
+            except Exception as e:
+                print(f"Error {asset}:", e)
+
+        time.sleep(10)
+
+# =========================
+# STATUS COMMAND
 # =========================
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not state:
-        await update.message.reply_text("📊 Пока нет активных сигналов")
+        await update.message.reply_text("📊 Нет активных сигналов")
         return
 
-    msg = "🧠 LIVE STATUS\n\n"
+    msg = "🧠 LIVE SIGNALS\n\n"
     now = time.time()
 
     for asset, data in state.items():
@@ -215,27 +219,14 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg += (
             f"{asset}\n"
             f"{data['direction']} | {data['score']}/3\n"
+            f"Expiry: {data['expiry']} candles\n"
             f"Age: {age}s\n\n"
         )
 
     await update.message.reply_text(msg)
 
 # =========================
-# LOOP
-# =========================
-
-def loop():
-    while True:
-        for a in ASSETS:
-            try:
-                analyze(a)
-            except:
-                pass
-
-        time.sleep(10)
-
-# =========================
-# START
+# START BOT
 # =========================
 
 app = Application.builder().token(BOT_TOKEN).build()
@@ -243,5 +234,5 @@ app.add_handler(CommandHandler("status", status))
 
 threading.Thread(target=loop, daemon=True).start()
 
-print("BOT RUNNING v3 (PRE-SIGNAL ENABLED)")
+print("BOT RUNNING (5m BINARIUM PRO VERSION)")
 app.run_polling()

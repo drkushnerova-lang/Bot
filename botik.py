@@ -106,13 +106,13 @@ def analyze(asset):
 
     rsi, macd, ema9, ema20, ema50, adx = indicators(df)
 
-    if adx.iloc[-1] < 18:
+    if adx.iloc[-1] < 15:
         return
 
     # RSI
     rsi_prev, rsi_now = rsi.iloc[-2], rsi.iloc[-1]
-    rsi_buy = rsi_prev < 48 and rsi_now > 48
-    rsi_sell = rsi_prev > 52 and rsi_now < 52
+    rsi_buy = rsi_prev < 50 and rsi_now > 50
+    rsi_sell = rsi_prev > 50 and rsi_now < 50
 
     # MACD
     macd_line = macd.macd()
@@ -122,8 +122,8 @@ def analyze(asset):
     macd_sell = macd_line.iloc[-2] > signal_line.iloc[-2] and macd_line.iloc[-1] < signal_line.iloc[-1]
 
     # EMA
-    ema_buy = ema9.iloc[-1] > ema20.iloc[-1] > ema50.iloc[-1]
-    ema_sell = ema9.iloc[-1] < ema20.iloc[-1] < ema50.iloc[-1]
+    ema_buy = ema9.iloc[-1] > ema20.iloc[-1]
+    ema_sell = ema9.iloc[-1] < ema20.iloc[-1]
 
     buy_score = sum([rsi_buy, macd_buy, ema_buy])
     sell_score = sum([rsi_sell, macd_sell, ema_sell])
@@ -141,6 +141,8 @@ def analyze(asset):
     else:
         direction = "SELL"
         score = sell_score
+    if score == 0:
+        return
 
     prob = probability(score, adx.iloc[-1])
 

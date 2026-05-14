@@ -97,8 +97,17 @@ def analyze(asset):
     rsi_now = rsi.iloc[-1]
     adx_now = adx.iloc[-1]
 
+    # =========================
+    # MACD HISTOGRAM (IMPROVED)
+    # =========================
+
     macd_line = macd.macd()
     signal_line = macd.macd_signal()
+
+    hist = macd_line - signal_line
+
+    macd_buy = hist.iloc[-2] < 0 and hist.iloc[-1] > 0   # красный → зелёный
+    macd_sell = hist.iloc[-2] > 0 and hist.iloc[-1] < 0  # зелёный → красный
 
     # =========================
     # CONDITIONS
@@ -106,9 +115,6 @@ def analyze(asset):
 
     rsi_buy = rsi_now > 50
     rsi_sell = rsi_now < 50
-
-    macd_buy = macd_line.iloc[-1] > signal_line.iloc[-1]
-    macd_sell = macd_line.iloc[-1] < signal_line.iloc[-1]
 
     ema_buy = ema9.iloc[-1] > ema20.iloc[-1]
     ema_sell = ema9.iloc[-1] < ema20.iloc[-1]

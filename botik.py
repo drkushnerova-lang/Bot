@@ -106,13 +106,13 @@ def analyze(asset):
 
     rsi, macd, ema9, ema20, ema50, adx = indicators(df)
 
-    if adx.iloc[-1] < 22:
+    if adx.iloc[-1] < 18:
         return
 
     # RSI
     rsi_prev, rsi_now = rsi.iloc[-2], rsi.iloc[-1]
-    rsi_buy = rsi_prev < 30 and rsi_now > 30
-    rsi_sell = rsi_prev > 70 and rsi_now < 70
+    rsi_buy = rsi_prev < 48 and rsi_now > 48
+    rsi_sell = rsi_prev > 52 and rsi_now < 52
 
     # MACD
     macd_line = macd.macd()
@@ -128,8 +128,19 @@ def analyze(asset):
     buy_score = sum([rsi_buy, macd_buy, ema_buy])
     sell_score = sum([rsi_sell, macd_sell, ema_sell])
 
-    direction = "BUY" if buy_score >= sell_score else "SELL"
-    score = max(buy_score, sell_score)
+    print(
+        asset,
+        "BUY:", buy_score,
+        "SELL:", sell_score,
+        "ADX:", round(adx.iloc[-1], 1)
+    )
+
+    if buy_score >= sell_score:
+        direction = "BUY"
+        score = buy_score
+    else:
+        direction = "SELL"
+        score = sell_score
 
     prob = probability(score, adx.iloc[-1])
 
@@ -137,7 +148,8 @@ def analyze(asset):
     # STATE MEMORY
     # =========================
 
-    prev = state.get(asset, {}).get("phase")
+    prev_phase = state.get(asset, {}).get("phase")
+    prev_dir = state.get(asset, {}).get("direction")
 
     if score == 1:
         phase = "SETUP"
@@ -149,7 +161,7 @@ def analyze(asset):
         return
 
     # защита от спама
-    if prev == phase:
+    if prev_phase == phase and prev_dir == direction:
         return
 
     state[asset] = {

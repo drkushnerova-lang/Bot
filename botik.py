@@ -29,11 +29,14 @@ ASSETS = [
 ]
 
 # =========================
-# MEMORY (ЖИВОЙ МОЗГ)
+# MEMORY
 # =========================
 
-state = {}              # текущая фаза
-signal_time = {}        # время входа в фазу
+state = {}
+last_signal_time = {}
+pre_signal_time = {}
+
+COOLDOWN = 180  # 3 минуты между сигналами
 
 # =========================
 # TELEGRAM
@@ -58,7 +61,7 @@ def get_data(asset):
 
     df = df[["Open", "High", "Low", "Close"]].dropna()
 
-    if len(df) < 80:
+    if len(df) < 60:
         return None
 
     return df
@@ -68,7 +71,6 @@ def get_data(asset):
 # =========================
 
 def indicators(df):
-
     close = df["Close"]
 
     rsi = RSIIndicator(close, 14).rsi()
@@ -76,160 +78,138 @@ def indicators(df):
 
     ema9 = EMAIndicator(close, 9).ema_indicator()
     ema20 = EMAIndicator(close, 20).ema_indicator()
-    ema50 = EMAIndicator(close, 50).ema_indicator()
 
     adx = ADXIndicator(df["High"], df["Low"], close, 14).adx()
 
-    return rsi, macd, ema9, ema20, ema50, adx
-
-# =========================
-# HELPERS
-# =========================
-
-def arrow(direction):
-    return "⬆️ BUY" if direction == "BUY" else "⬇️ SELL"
-
-
-def probability(score, adx):
-    p = 50 + score * 15 + (adx - 20) * 1.2
-    return int(max(10, min(95, p)))
+    return rsi, macd, ema9, ema20, adx
 
 # =========================
 # LOGIC
 # =========================
 
 def analyze(asset):
-
     df = get_data(asset)
     if df is None:
         return
 
-    rsi, macd, ema9, ema20, ema50, adx = indicators(df)
+    rsi, macd, ema9, ema20, adx = indicators(df)
 
-    if adx.iloc[-1] < 15:
-        return
+    rsi_now = rsi.iloc[-1]
+    adx_now = adx.iloc[-1]
 
-    # RSI
-    rsi_prev, rsi_now = rsi.iloc[-2], rsi.iloc[-1]
-    rsi_buy = rsi_prev < 50 and rsi_now > 50
-    rsi_sell = rsi_prev > 50 and rsi_now < 50
-
-    # MACD
     macd_line = macd.macd()
     signal_line = macd.macd_signal()
 
-    macd_buy = macd_line.iloc[-2] < signal_line.iloc[-2] and macd_line.iloc[-1] > signal_line.iloc[-1]
-    macd_sell = macd_line.iloc[-2] > signal_line.iloc[-2] and macd_line.iloc[-1] < signal_line.iloc[-1]
+    # =========================
+    # CONDITIONS
+    # =========================
 
-    # EMA
+    rsi_buy = rsi_now > 50
+    rsi_sell = rsi_now < 50
+
+    macd_buy = macd_line.iloc[-1] > signal_line.iloc[-1]
+    macd_sell = macd_line.iloc[-1] < signal_line.iloc[-1]
+
     ema_buy = ema9.iloc[-1] > ema20.iloc[-1]
     ema_sell = ema9.iloc[-1] < ema20.iloc[-1]
 
-    buy_score = sum([rsi_buy, macd_buy, ema_buy])
-    sell_score = sum([rsi_sell, macd_sell, ema_sell])
+    buy_score = int(rsi_buy) + int(macd_buy) + int(ema_buy)
+    sell_score = int(rsi_sell) + int(macd_sell) + int(ema_sell)
 
-    print(
-        asset,
-        "BUY:", buy_score,
-        "SELL:", sell_score,
-        "ADX:", round(adx.iloc[-1], 1)
-    )
+    direction = "BUY" if buy_score >= sell_score else "SELL"
+    score = max(buy_score, sell_score)
 
-    if buy_score >= sell_score:
-        direction = "BUY"
-        score = buy_score
-    else:
-        direction = "SELL"
-        score = sell_score
-    if score == 0:
+    # =========================
+    # FILTERS
+    # =========================
+
+    if adx_now < 12:
         return
 
-    prob = probability(score, adx.iloc[-1])
-
-    # =========================
-    # STATE MEMORY
-    # =========================
-
-    prev_phase = state.get(asset, {}).get("phase")
-    prev_dir = state.get(asset, {}).get("direction")
-
-    if score == 1:
-        phase = "SETUP"
-    elif score == 2:
-        phase = "CONFIRM"
-    elif score == 3:
-        phase = "ENTRY"
-    else:
+    if score < 2:
         return
 
-    # защита от спама
-    if prev_phase == phase and prev_dir == direction:
+    now = time.time()
+
+    # cooldown
+    last_time = last_signal_time.get(asset, 0)
+    if now - last_time < COOLDOWN:
         return
 
-    state[asset] = {
-        "phase": phase,
-        "direction": direction,
-        "time": time.time(),
-        "prob": prob
-    }
-
-    signal_time[asset] = time.time()
-
     # =========================
-    # MESSAGES
+    # PRE-SIGNAL LOGIC
     # =========================
 
-    if phase == "SETUP":
-        send_telegram(f"""
-📊 {asset}
+    last_pre = pre_signal_time.get(asset, 0)
 
-⚠️ SETUP {arrow(direction)}
-Формируется движение
-📊 Probability: {prob}%
-""")
+    if score == 2 and now - last_pre > 60:
+        pre_signal_time[asset] = now
 
-    elif phase == "CONFIRM":
-        send_telegram(f"""
-📊 {asset}
+        send_telegram(
+            f"""
+⏳ {asset}
 
-⏳ CONFIRM {arrow(direction)}
-2/3 условий выполнены
-📊 Probability: {prob}%
-""")
+⚠️ PRE-SIGNAL
+Возможный вход через 30–60 сек
 
-    elif phase == "ENTRY":
-        send_telegram(f"""
+📊 Direction: {direction}
+📈 Strength: {score}/3
+RSI: {round(rsi_now, 1)}
+ADX: {round(adx_now, 1)}
+"""
+        )
+        return
+
+    # =========================
+    # ENTRY SIGNAL
+    # =========================
+
+    if score == 3:
+        last_signal_time[asset] = now
+
+        send_telegram(
+            f"""
 🔥 {asset}
 
-{arrow(direction)} — ВХОД СЕЙЧАС
+🚀 ENTRY NOW
+{direction}
 
-📊 Probability: {prob}%
-⚡ ОТКРЫВАЙ СДЕЛКУ
-""")
+📈 Strength: 3/3
+📊 Probability: {50 + score * 12 + (adx_now - 15) * 1.5:.0f}%
+
+RSI: {round(rsi_now, 1)}
+ADX: {round(adx_now, 1)}
+
+⚡ ВХОД СЕЙЧАС
+"""
+        )
+
+        state[asset] = {
+            "direction": direction,
+            "score": score,
+            "time": now
+        }
 
 # =========================
-# STATUS (ЖИВОЙ МОЗГ)
+# STATUS
 # =========================
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not state:
-        await update.message.reply_text("📊 Нет активных сигналов")
+        await update.message.reply_text("📊 Пока нет активных сигналов")
         return
 
-    msg = "🧠 LIVE BRAIN STATUS\n\n"
-
+    msg = "🧠 LIVE STATUS\n\n"
     now = time.time()
 
     for asset, data in state.items():
-
-        t = int(now - data["time"])
+        age = int(now - data["time"])
 
         msg += (
             f"{asset}\n"
-            f"{data['phase']} {arrow(data['direction'])}\n"
-            f"Prob: {data['prob']}%\n"
-            f"Age: {t} sec\n\n"
+            f"{data['direction']} | {data['score']}/3\n"
+            f"Age: {age}s\n\n"
         )
 
     await update.message.reply_text(msg)
@@ -240,25 +220,22 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def loop():
     while True:
-        try:
-            for a in ASSETS:
+        for a in ASSETS:
+            try:
                 analyze(a)
+            except:
+                pass
 
-            time.sleep(10)
-
-        except Exception as e:
-            print(e)
-            time.sleep(5)
+        time.sleep(10)
 
 # =========================
 # START
 # =========================
 
 app = Application.builder().token(BOT_TOKEN).build()
-
 app.add_handler(CommandHandler("status", status))
 
 threading.Thread(target=loop, daemon=True).start()
 
-print("PRO v2.5 running")
+print("BOT RUNNING v3 (PRE-SIGNAL ENABLED)")
 app.run_polling()
